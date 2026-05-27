@@ -12,15 +12,25 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
+#include "states.h"
 #include "gethostbyname.h"
 #include "networks.h"
 #include "safeUtil.h"
 #include "pduLib.h"
+#include "serverLib.h"
 #include "cpe464.h"
 
 #define MAXBUF 1400 // 1400 for the max payload length, 7 bytes for the header length
 
-void processClient(int socketNum);
+void processServer(int socketNum, float errorRate);
+void processClient(
+	int socketNum, 
+	struct sockaddr_in6 client,
+	int clientAddrLen,
+	uint8_t payload[], 
+	uint8_t payloadLen,
+	float errorRate
+);
 int checkArgs(int argc, char *argv[]);
 void handleZombies(int sig);
 
@@ -41,7 +51,7 @@ int main ( int argc, char *argv[]  )
 		
 	socketNum = udpServerSetup(portNumber);
 
-	processClient(socketNum);
+	processServer(socketNum, errorRate);
 
 	close(socketNum);
 	
@@ -49,7 +59,7 @@ int main ( int argc, char *argv[]  )
 }
 
 // Handles the main server logic (forking children processes when appropriate)
-void processServer(int socketNum) {
+void processServer(int socketNum, float errorRate) {
 	pid_t pid = 0;
 
 	int recvLen = 0;
@@ -61,42 +71,48 @@ void processServer(int socketNum) {
 	signal(SIGCHLD, handleZombies);
 	while (1) {
 		recvLen = safeRecvfrom(socketNum, recvBuffer, MAXBUF + 7, 0, (struct sockaddr *) &client, &clientAddrLen);
-		// check for packet corruption
-		if (calculateChecksum(recvBuffer, recvLen) != 0) {
+		// Make sure that the packet isn't corrupted
+		if (calculateChecksum(recvBuffer, recvLen) == 0) {
 			if ((pid = fork()) < 0) {
 				perror("Error: fork\n");
 				exit(-1);
-			} else {
+			} 
+			if (pid == 0) {
 				printf("Child fork() - child pdi: %d\n", getpid());
-				processClient(socketNum, recvBuffer, recvLen, client);
+				// Move the pointer on the buffer to point to the payload rather than the header
+				processClient(socketNum, client, clientAddrLen, recvBuffer + 7, recvLen - 7, errorRate);
+				exit(0);
 			}
 		}
 	}
 }
 
 // Handles the child servers
-void processClient(int socketNum)
-{
-	int dataLen = 0; 
-	uint8_t buffer[MAXBUF];	  
-	struct sockaddr_in6 client;		
-	int clientAddrLen = sizeof(client);	
-	
-	buffer[0] = '\0';
-	while (buffer[0] != '.')
-	{
-		dataLen = safeRecvfrom(socketNum, buffer, MAXBUF, 0, (struct sockaddr *) &client, &clientAddrLen);
-	
-		printf("Received message from client with ");
-		printIPInfo(&client);
-		printf("Len: %d Message Len: %d Message: %s\n", dataLen, dataLen - 7, buffer + 7);
-
-		printPDU(buffer, dataLen);
-
-		// just for fun send back to client number of bytes received
-		// sprintf(buffer, "bytes: %d", dataLen);
-
-		// safeSendto(socketNum, buffer, dataLen, 0, (struct sockaddr *) & client, clientAddrLen);
+void processClient(
+	int socketNum, 
+	struct sockaddr_in6 client, 
+	int clientAddrLen,
+	uint8_t payload[], 
+	uint8_t payloadLen,
+	float errorRate
+) {
+	SERVER_STATE state = SERVER_START_STATE;
+	while (state != SERVER_DONE_STATE) {
+		switch (state) {
+			case SERVER_START_STATE:
+				// Update the socket number with the new local socket
+				socketNum = onStart(client, errorRate);
+				state = SERVER_FILENAME_STATE;
+				break;
+			case SERVER_FILENAME_STATE:
+				state = onFilename(socketNum, client, clientAddrLen, payload, payloadLen);
+				break;
+			case SERVER_DATA_STATE:
+				state = SERVER_DONE_STATE;
+				break;
+			case SERVER_DONE_STATE:
+				break;
+		}
 	}
 }
 

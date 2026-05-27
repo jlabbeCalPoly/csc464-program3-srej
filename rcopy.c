@@ -70,18 +70,19 @@ void processRcopy(
 	char *fromFilename,
 	char *toFilename
 ) {
-	RCOPY_STATE state = FILENAME_STATE;
+	RCOPY_STATE state = RCOPY_FILENAME_STATE;
+	int newSocket = 0;
 
-	while (state != DONE_STATE) {
+	while (state != RCOPY_DONE_STATE) {
 		switch (state) {
-			case FILENAME_STATE:
-				state = onFilename(socketNum, server, serverAddrLen, toFilename, MAXBUF);
+			case RCOPY_FILENAME_STATE:
+				state = onFilename(socketNum, newSocket, server, serverAddrLen, toFilename, MAXBUF);
 				break;
-			case DATA_STATE:
-				state = DONE_STATE;
+			case RCOPY_DATA_STATE:
+				state = RCOPY_DONE_STATE;
 				printf("data state");
 				break;
-			case DONE_STATE:
+			case RCOPY_DONE_STATE:
 				break;
 		}
 	}
@@ -152,7 +153,8 @@ void validateFilenames(char *fromFilename, char *toFilename) {
 	}
 
 	if (open(fromFilename, O_RDONLY) < 0) {
-
+		printf("error: could not open the from-filename\n");
+		exit(1);
 	}
 }
 

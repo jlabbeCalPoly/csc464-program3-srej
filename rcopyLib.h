@@ -3,6 +3,7 @@
 
 RCOPY_STATE onFilename(
     int socketNum, 
+    int newSocket,
 	struct sockaddr_in6 * server,
     int serverAddrLen,
 	char *toFilename,
