@@ -1,5 +1,6 @@
 #include <string.h>
 #include <stdio.h>
+#include <arpa/inet.h>
 #include <netinet/in.h>
 
 #include "flags.h"
@@ -47,6 +48,8 @@ RCOPY_STATE onFilename(
 	struct sockaddr_in6 * server,
     int serverAddrLen,
 	char *toFilename,
+    int windowSize,
+    int bufferSize,
     int MAXBUF
 ) {
     printf("In filename\n");
@@ -54,9 +57,15 @@ RCOPY_STATE onFilename(
     uint8_t counter = 0;
 
     // Copy the toFilename into a uint8_t payload buffer
-    int payloadLen = strlen(toFilename);
+    int filenameLen = strlen(toFilename);
+    // 8 additional bytes for the windowSize and bufferSize
+    int payloadLen = filenameLen + 8;
     uint8_t payload[payloadLen];
-    memcpy(payload, toFilename, payloadLen);
+    uint32_t windowSizeNet = htonl(windowSize);
+    uint32_t bufferSizeNet = htonl(bufferSize);
+    memcpy(payload, &windowSizeNet, 4);
+    memcpy(payload + 4, &bufferSizeNet, 4);
+    memcpy(payload + 8, toFilename, filenameLen);
 
     // Build buffer to store the pdu contents and space to receieve the response from the server
 	uint8_t pduBuffer[payloadLen + 7];
@@ -69,7 +78,7 @@ RCOPY_STATE onFilename(
         if ((pollRecv = pollCall(1000)) != -1) {
             int recvLen = safeRecvfrom(socketNum, recvBuffer, MAXBUF + 7, 0, (struct sockaddr *) server, &serverAddrLen);   
             // debug
-		    printPDU(recvBuffer, recvLen); 
+		    // printPDU(recvBuffer, recvLen); 
 
             // Check for data corruption
             if (calculateChecksum(recvBuffer, recvLen) == 0) {

@@ -1,4 +1,5 @@
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <fcntl.h>
 
 #include "flags.h"
@@ -10,7 +11,7 @@
 #include "cpe464.h"
 
 // Handles setting up the child server process appropriately, returns the new socket
-int onStart(struct sockaddr_in6 client, float errorRate) {
+int onStart(struct sockaddr_in6 client, float errorRate, uint8_t *payload) {
     sendErr_init(errorRate, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
     int socket = createUdpSocket();
 
@@ -18,14 +19,23 @@ int onStart(struct sockaddr_in6 client, float errorRate) {
     setupPollSet();
 	addToPollSet(socket);
 
+    // Initalize the circular buffer for this process (based on the provided window and buffer sizes)
+    uint32_t windowSizeNet = 0;
+    memcpy(&windowSizeNet, payload, 4);
+    u_int32_t windowSizeHost = ntohl(windowSizeNet);
+
+    uint32_t bufferSizeNet = 0;
+    memcpy(&bufferSizeNet, payload + 4, 4);
+    u_int32_t bufferSizeHost = ntohl(bufferSizeNet);
+
     // debug
-    printf("Created a new UDP socket: %d\n", socket);
+    // printf("Created a new UDP socket: %d\n", socket);
 
     return socket;
 }
 
 // Validate that the file can be created and written to on the server
-int onFilenameValidateFilename(uint8_t payload[], uint8_t payloadLen) {
+int onFilenameValidateFilename(uint8_t *payload, uint8_t payloadLen) {
     char filename[payloadLen + 1];
     memcpy(filename, payload, payloadLen);
     filename[payloadLen] = '\0';
@@ -42,7 +52,7 @@ SERVER_STATE onFilename(
     int socketNum, 
     struct sockaddr_in6 client,
     int clientAddrLen,
-    uint8_t payload[], 
+    uint8_t *payload, 
     uint8_t payloadLen
 ) {
     uint8_t filenameFlag = onFilenameValidateFilename(payload, payloadLen);

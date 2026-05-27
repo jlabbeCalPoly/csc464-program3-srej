@@ -101,11 +101,11 @@ void processClient(
 		switch (state) {
 			case SERVER_START_STATE:
 				// Update the socket number with the new local socket
-				socketNum = onStart(client, errorRate);
+				socketNum = onStart(client, errorRate, payload);
 				state = SERVER_FILENAME_STATE;
 				break;
 			case SERVER_FILENAME_STATE:
-				state = onFilename(socketNum, client, clientAddrLen, payload, payloadLen);
+				state = onFilename(socketNum, client, clientAddrLen, payload + 8, payloadLen - 8);
 				break;
 			case SERVER_DATA_STATE:
 				state = SERVER_DONE_STATE;

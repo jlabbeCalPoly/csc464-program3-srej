@@ -31,7 +31,7 @@
 // 	START, DONE, FILENAME, SEND_DATA, WAIT_ON_ACK, TIMEOUT_ON_ACK
 // };
 void talkToServer(int socketNum, struct sockaddr_in6 * server);
-void processRcopy(int socketNum, struct sockaddr_in6 * server, int serverAddrLen, char *fromFilename, char *toFilename);
+void processRcopy(int socketNum, struct sockaddr_in6 * server, int serverAddrLen, char *fromFilename, char *toFilename, int windowSize, int bufferSize);
 int readFromStdin(uint8_t * buffer);
 void validateArgs(int argc, char * argv[]);
 void validateFilenames(char *fromFilename, char *toFilename);
@@ -44,8 +44,8 @@ int main(int argc, char *argv[]) {
 	validateArgs(argc, argv);
 	char *fromFilename = argv[1];
 	char *toFilename = argv[2];
-	// int windowSize = atoi(argv[3]);
-	// int bufferSize = atoi(argv[4]);
+	int windowSize = atoi(argv[3]);
+	int bufferSize = atoi(argv[4]);
 	float errorRate = atof(argv[5]);
 	char *hostName = argv[6];
 	int hostNumber = atoi(argv[7]);
@@ -55,7 +55,7 @@ int main(int argc, char *argv[]) {
 	socketNum = setupUdpClientToServer(&server, hostName, hostNumber);
 	setupPollSet();
 	addToPollSet(socketNum);
-	processRcopy(socketNum, &server, serverAddrLen, fromFilename, toFilename);
+	processRcopy(socketNum, &server, serverAddrLen, fromFilename, toFilename, windowSize, bufferSize);
 	// talkToServer(socketNum, &server);
 
 	close(socketNum);
@@ -68,7 +68,9 @@ void processRcopy(
 	struct sockaddr_in6 * server,
 	int serverAddrLen,
 	char *fromFilename,
-	char *toFilename
+	char *toFilename,
+	int windowSize,
+	int bufferSize
 ) {
 	RCOPY_STATE state = RCOPY_FILENAME_STATE;
 	int newSocket = 0;
@@ -76,7 +78,16 @@ void processRcopy(
 	while (state != RCOPY_DONE_STATE) {
 		switch (state) {
 			case RCOPY_FILENAME_STATE:
-				state = onFilename(socketNum, newSocket, server, serverAddrLen, toFilename, MAXBUF);
+				state = onFilename(
+					socketNum, 
+					newSocket, 
+					server, 
+					serverAddrLen, 
+					toFilename, 
+					windowSize,
+					bufferSize,
+					MAXBUF
+				);
 				break;
 			case RCOPY_DATA_STATE:
 				state = RCOPY_DONE_STATE;

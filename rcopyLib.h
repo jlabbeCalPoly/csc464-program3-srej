@@ -7,6 +7,8 @@ RCOPY_STATE onFilename(
 	struct sockaddr_in6 * server,
     int serverAddrLen,
 	char *toFilename,
+    int windowSize,
+    int bufferSize,
     int MAXBUF
 );
 
