@@ -2,12 +2,28 @@
 #include <stdio.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
+#include <unistd.h>
 
 #include "flags.h"
 #include "states.h"
 #include "pduLib.h"
 #include "pollLib.h"
 #include "safeUtil.h"
+#include "rcopySlidingWindow.h"
+
+// Constants for rcopyLib
+#define MOVE_TO_DONE_STATE -1
+#define STAY_IN_DATA_STATE 0
+
+// Setup for rcopy
+RCOPY_STATE onStart(int socketNum, int windowSize, int bufferSize) {
+    setupPollSet();
+	addToPollSet(socketNum);
+
+    setupSlidingWindow(windowSize, bufferSize);
+
+    return RCOPY_FILENAME_STATE;
+}
 
 // Helper function for determining the next state after receiving a valid pdu from the server in the filename state
 RCOPY_STATE onFilenameGetNextState(int recvLen, uint8_t recvBuffer[], char *toFilename) {
@@ -52,7 +68,6 @@ RCOPY_STATE onFilename(
     int bufferSize,
     int MAXBUF
 ) {
-    printf("In filename\n");
     int pollRecv = 0;
     uint8_t counter = 0;
 
@@ -98,4 +113,211 @@ RCOPY_STATE onFilename(
     };
 
     return RCOPY_DONE_STATE;
+}
+
+void onDataRR(uint32_t sequenceNumberHost, int windowSize) {
+    incrementBounds(sequenceNumberHost, windowSize);
+}
+
+// Resend a specific packet
+void onDataResend(uint32_t sequenceNumberHost, int childSocket, struct sockaddr_in6 * server, int serverAddrLen, int bufferSize) {
+    uint8_t dataBuffer[bufferSize + 7];
+    int size = getSlidingWindowEntry(sequenceNumberHost, dataBuffer);
+    safeSendto(childSocket, dataBuffer, size, 0, (struct sockaddr *) server, serverAddrLen);
+}
+
+// Handle sending the RR or SREJ in the event poll returned
+void handlePollReturn(
+    int childSocket, 
+    struct sockaddr_in6 * server,
+    int serverAddrLen,
+    int windowSize,
+    int bufferSize,
+    int MAXBUF
+) {
+    uint8_t recvBuffer[MAXBUF + 7];
+    int recvLen = safeRecvfrom(childSocket, recvBuffer, MAXBUF + 7, 0, (struct sockaddr *) server, &serverAddrLen);
+
+    if (recvLen == 0) {
+        perror("Error: recvLen is 0");
+        exit(-1);
+    }
+
+    uint8_t flag = getFlag(recvBuffer + 6);
+    uint32_t sequenceNumberNet;
+    memcpy(&sequenceNumberNet, recvBuffer + 7, 4);
+    uint32_t sequenceNumberHost = ntohl(sequenceNumberNet);
+
+    if (flag == RR_FLAG) {
+        onDataRR(sequenceNumberHost, windowSize);
+    } else {
+        // SREJ, resend the specific packet
+        onDataResend(sequenceNumberHost, childSocket, server, serverAddrLen, bufferSize);
+    }
+}
+
+// Poll for one second and resend the lowest data packet if needed. Returns the 
+int onDataPoll(
+    int childSocket, 
+    struct sockaddr_in6 * server,
+    int serverAddrLen,
+    int windowSize,
+    int bufferSize,
+    int MAXBUF
+) {
+    int pollRecv = 0;
+    int counter = 0;
+
+    while ((pollRecv = pollCall(1000)) == -1) {
+        // Timeout and counter > 9, meaning other side most likely terminated
+        if (counter > 9) {
+            printf("Moving to done state...\n");
+            return MOVE_TO_DONE_STATE;
+        }
+        // Increment the timer and resend the lowest packet
+        counter++;
+        printf("Incrementing counter: %d\n", counter);
+        int lowestSequenceNumber = getRR();
+        onDataResend(lowestSequenceNumber, childSocket, server, serverAddrLen, bufferSize);
+    }
+
+    handlePollReturn(
+        childSocket, 
+        server,
+        serverAddrLen,
+        windowSize,
+        bufferSize,
+        MAXBUF
+    );
+
+    return STAY_IN_DATA_STATE;
+}
+
+// Process while the window is open
+int onDataOpen(
+    int childSocket, 
+    struct sockaddr_in6 * server,
+    int serverAddrLen,
+    int windowSize,
+    int bufferSize, 
+    int fileDescriptor,
+    int MAXBUF
+) {
+    int action = STAY_IN_DATA_STATE;
+    uint8_t readBuffer[bufferSize];
+
+    while (isWindowOpen() != 0) {
+        ssize_t readBytes = read(fileDescriptor, readBuffer, bufferSize);
+        if (readBytes < 0) {
+            perror("Error: read returned a negative value\n");
+            exit(-1);
+        } else if (readBytes == 0) {
+            if (isServerDoneReceiving()) {
+                uint8_t pduBuffer[7];
+                int pduLen = createPDU(pduBuffer, 0, DATA_FLAG, readBuffer, 0);
+
+                // Send the data packet to the server that signfies EOF (no data), then move to the done state
+                safeSendto(childSocket, pduBuffer, pduLen, 0, (struct sockaddr *) server, serverAddrLen);
+                action = MOVE_TO_DONE_STATE;
+            } else {
+                action = onDataPoll(
+                    childSocket, 
+                    server,
+                    serverAddrLen,
+                    windowSize,
+                    bufferSize,
+                    MAXBUF
+                );
+            }
+        } else {
+            uint8_t pduBuffer[readBytes + 7];
+            uint32_t sequenceNumber = incrementCurrent();
+            printf("Packet sent with seq number: %d\n", sequenceNumber);
+
+            int pduLen = createPDU(pduBuffer, sequenceNumber, DATA_FLAG, readBuffer, readBytes);
+
+            printf("Created pdu\n");
+
+            addToSlidingWindow(sequenceNumber, pduLen, pduBuffer);
+
+            printf("Added to sliding window\n");
+
+            safeSendto(childSocket, pduBuffer, pduLen, 0, (struct sockaddr *) server, serverAddrLen);
+
+            printf("Safe sent\n");
+
+            int pollRecv = 0;
+            // handle any RR/SREJ packets
+            while ((pollRecv = pollCall(0)) != -1) {
+                handlePollReturn(
+                    childSocket, 
+                    server,
+                    serverAddrLen,
+                    windowSize,
+                    bufferSize,
+                    MAXBUF
+                );
+            }
+        }
+    }
+
+    return action;
+}
+
+int onDataClosed(
+    int childSocket, 
+    struct sockaddr_in6 * server,
+    int serverAddrLen,
+    int windowSize,
+    int bufferSize,
+    int MAXBUF
+) {
+    int action = STAY_IN_DATA_STATE;
+
+    while (isWindowOpen() == 0) {
+        action = onDataPoll(
+            childSocket, 
+            server,
+            serverAddrLen,
+            windowSize,
+            bufferSize,
+            MAXBUF
+        );
+    }
+
+    return action;
+}
+
+RCOPY_STATE onData(
+    int childSocket, 
+    struct sockaddr_in6 * server,
+    int serverAddrLen,
+    int windowSize,
+    int bufferSize, 
+    int fileDescriptor,
+    int MAXBUF
+) {
+    int onDataOpenStatus = onDataOpen(
+        childSocket,
+        server,
+        serverAddrLen,
+        windowSize,
+        bufferSize,
+        fileDescriptor,
+        MAXBUF
+    );
+    int onDataClosedStatus = onDataClosed(
+        childSocket,
+        server,
+        serverAddrLen,
+        windowSize,
+        bufferSize,
+        MAXBUF
+    );
+
+    if (onDataOpenStatus == MOVE_TO_DONE_STATE || onDataClosedStatus == MOVE_TO_DONE_STATE) {
+        return RCOPY_DONE_STATE;
+    } else {
+        return RCOPY_DATA_STATE;
+    }
 }

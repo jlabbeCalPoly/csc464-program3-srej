@@ -3,6 +3,7 @@
 
 // State for rcopy
 typedef enum rcopyState {
+    RCOPY_START_STATE,
     RCOPY_FILENAME_STATE,
     RCOPY_DATA_STATE,
     RCOPY_DONE_STATE

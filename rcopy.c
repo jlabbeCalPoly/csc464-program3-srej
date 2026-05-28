@@ -31,10 +31,18 @@
 // 	START, DONE, FILENAME, SEND_DATA, WAIT_ON_ACK, TIMEOUT_ON_ACK
 // };
 void talkToServer(int socketNum, struct sockaddr_in6 * server);
-void processRcopy(int socketNum, struct sockaddr_in6 * server, int serverAddrLen, char *fromFilename, char *toFilename, int windowSize, int bufferSize);
+void processRcopy(int socketNum, 
+	struct sockaddr_in6 * server, 
+	int serverAddrLen, 
+	char *fromFilename, 
+	char *toFilename, 
+	int windowSize, 
+	int bufferSize, 
+	int fileDescriptor
+);
 int readFromStdin(uint8_t * buffer);
 void validateArgs(int argc, char * argv[]);
-void validateFilenames(char *fromFilename, char *toFilename);
+int validateFilenames(char *fromFilename, char *toFilename);
 
 int main(int argc, char *argv[]) {
 	int socketNum = 0;				
@@ -49,13 +57,11 @@ int main(int argc, char *argv[]) {
 	float errorRate = atof(argv[5]);
 	char *hostName = argv[6];
 	int hostNumber = atoi(argv[7]);
-	validateFilenames(fromFilename, toFilename);
+	int fileDescriptor = validateFilenames(fromFilename, toFilename);
 
 	sendErr_init(errorRate, DROP_ON, FLIP_ON, DEBUG_OFF, RSEED_OFF);
 	socketNum = setupUdpClientToServer(&server, hostName, hostNumber);
-	setupPollSet();
-	addToPollSet(socketNum);
-	processRcopy(socketNum, &server, serverAddrLen, fromFilename, toFilename, windowSize, bufferSize);
+	processRcopy(socketNum, &server, serverAddrLen, fromFilename, toFilename, windowSize, bufferSize, fileDescriptor);
 	// talkToServer(socketNum, &server);
 
 	close(socketNum);
@@ -70,17 +76,20 @@ void processRcopy(
 	char *fromFilename,
 	char *toFilename,
 	int windowSize,
-	int bufferSize
+	int bufferSize,
+	int fileDescriptor
 ) {
-	RCOPY_STATE state = RCOPY_FILENAME_STATE;
-	int newSocket = 0;
+	RCOPY_STATE state = RCOPY_START_STATE;
+	int childSocket = 0;
 
 	while (state != RCOPY_DONE_STATE) {
 		switch (state) {
+			case RCOPY_START_STATE:
+				state = onStart(socketNum, windowSize, bufferSize);
 			case RCOPY_FILENAME_STATE:
 				state = onFilename(
 					socketNum, 
-					newSocket, 
+					childSocket, 
 					server, 
 					serverAddrLen, 
 					toFilename, 
@@ -90,8 +99,15 @@ void processRcopy(
 				);
 				break;
 			case RCOPY_DATA_STATE:
-				state = RCOPY_DONE_STATE;
-				printf("data state");
+				state = onData(
+					childSocket,
+					server,
+					serverAddrLen,
+					windowSize,
+					bufferSize,
+					fileDescriptor,
+					MAXBUF
+				);
 				break;
 			case RCOPY_DONE_STATE:
 				break;
@@ -157,16 +173,19 @@ int readFromStdin(uint8_t *buffer) {
 }
 
 // Make sure that both filenames are valid (under 100 characters) and that you can open the fromFilename
-void validateFilenames(char *fromFilename, char *toFilename) {
+// Additionally, return the file descriptor to read from the fromFilename on success
+int validateFilenames(char *fromFilename, char *toFilename) {
 	if (strlen(fromFilename) > 100 || strlen(toFilename) > 100) {
 		printf("error: maximum filename length is 100 characters\n");
 		exit(1);
 	}
 
-	if (open(fromFilename, O_RDONLY) < 0) {
+	int fileDescriptor = 0;
+	if ((fileDescriptor = open(fromFilename, O_RDONLY)) < 0) {
 		printf("error: could not open the from-filename\n");
 		exit(1);
 	}
+	return fileDescriptor;
 }
 
 void validateArgs(int argc, char * argv[]) {

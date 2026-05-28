@@ -20,6 +20,7 @@ int onStart(struct sockaddr_in6 client, float errorRate, uint8_t *payload) {
 	addToPollSet(socket);
 
     // Initalize the circular buffer for this process (based on the provided window and buffer sizes)
+    /*
     uint32_t windowSizeNet = 0;
     memcpy(&windowSizeNet, payload, 4);
     u_int32_t windowSizeHost = ntohl(windowSizeNet);
@@ -27,6 +28,7 @@ int onStart(struct sockaddr_in6 client, float errorRate, uint8_t *payload) {
     uint32_t bufferSizeNet = 0;
     memcpy(&bufferSizeNet, payload + 4, 4);
     u_int32_t bufferSizeHost = ntohl(bufferSizeNet);
+    */
 
     // debug
     // printf("Created a new UDP socket: %d\n", socket);

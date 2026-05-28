@@ -15,7 +15,7 @@ CFLAGS += -D__LIBCPE464_
 all:  rcopy server
 
 rcopy: rcopy.c $(OBJS) 
-	$(CC) $(CFLAGS) -o rcopy rcopy.c pduLib.c rcopyLib.c flags.c $(OBJS) $(LIBS)
+	$(CC) $(CFLAGS) -o rcopy rcopy.c pduLib.c rcopyLib.c rcopySlidingWindow.c circularBuffer.c flags.c $(OBJS) $(LIBS)
 
 server: server.c $(OBJS) 
 	$(CC) $(CFLAGS) -o server server.c pduLib.c serverLib.c flags.c $(OBJS) $(LIBS)
