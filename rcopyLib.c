@@ -52,7 +52,6 @@ RCOPY_STATE onFilenameGetNextState(int recvLen, uint8_t recvBuffer[], char *toFi
  * Stop and wait procedure for filename transfer
  * 
  * @param socketNum The main server socket
- * @param newSocket Buffer for the new socket number that will be returned from a response from the server
  * @param server Information on the server
  * @param serverAddrLen The size of the sockaddr_in6
  * @param toFilename The filename to be created/written to on the server
@@ -60,7 +59,6 @@ RCOPY_STATE onFilenameGetNextState(int recvLen, uint8_t recvBuffer[], char *toFi
  */ 
 RCOPY_STATE onFilename(
     int socketNum, 
-    int newSocket,
 	struct sockaddr_in6 * server,
     int serverAddrLen,
 	char *toFilename,
@@ -97,11 +95,6 @@ RCOPY_STATE onFilename(
 
             // Check for data corruption
             if (calculateChecksum(recvBuffer, recvLen) == 0) {
-                // Update the server address with the new port
-                uint16_t port = ntohs(server->sin6_port);
-                memcpy(&newSocket, &port, 2);
-                printf("Old port: %d  New port: %d", socketNum, port);
-
                 return onFilenameGetNextState(recvLen, recvBuffer, toFilename);
             } else {
                 printf("Data corrupted...\n");
@@ -120,15 +113,15 @@ void onDataRR(uint32_t sequenceNumberHost, int windowSize) {
 }
 
 // Resend a specific packet
-void onDataResend(uint32_t sequenceNumberHost, int childSocket, struct sockaddr_in6 * server, int serverAddrLen, int bufferSize) {
+void onDataResend(uint32_t sequenceNumberHost, int socketNum, struct sockaddr_in6 * server, int serverAddrLen, int bufferSize) {
     uint8_t dataBuffer[bufferSize + 7];
     int size = getSlidingWindowEntry(sequenceNumberHost, dataBuffer);
-    safeSendto(childSocket, dataBuffer, size, 0, (struct sockaddr *) server, serverAddrLen);
+    safeSendto(socketNum, dataBuffer, size, 0, (struct sockaddr *) server, serverAddrLen);
 }
 
 // Handle sending the RR or SREJ in the event poll returned
 void handlePollReturn(
-    int childSocket, 
+    int socketNum, 
     struct sockaddr_in6 * server,
     int serverAddrLen,
     int windowSize,
@@ -136,11 +129,16 @@ void handlePollReturn(
     int MAXBUF
 ) {
     uint8_t recvBuffer[MAXBUF + 7];
-    int recvLen = safeRecvfrom(childSocket, recvBuffer, MAXBUF + 7, 0, (struct sockaddr *) server, &serverAddrLen);
+    int recvLen = safeRecvfrom(socketNum, recvBuffer, MAXBUF + 7, 0, (struct sockaddr *) server, &serverAddrLen);
 
     if (recvLen == 0) {
         perror("Error: recvLen is 0");
         exit(-1);
+    }
+
+    // Check for data corruption
+    if (calculateChecksum(recvBuffer, recvLen) != 0) {
+        return;
     }
 
     uint8_t flag = getFlag(recvBuffer + 6);
@@ -152,13 +150,13 @@ void handlePollReturn(
         onDataRR(sequenceNumberHost, windowSize);
     } else {
         // SREJ, resend the specific packet
-        onDataResend(sequenceNumberHost, childSocket, server, serverAddrLen, bufferSize);
+        onDataResend(sequenceNumberHost, socketNum, server, serverAddrLen, bufferSize);
     }
 }
 
 // Poll for one second and resend the lowest data packet if needed. Returns the 
 int onDataPoll(
-    int childSocket, 
+    int socketNum, 
     struct sockaddr_in6 * server,
     int serverAddrLen,
     int windowSize,
@@ -178,11 +176,11 @@ int onDataPoll(
         counter++;
         printf("Incrementing counter: %d\n", counter);
         int lowestSequenceNumber = getRR();
-        onDataResend(lowestSequenceNumber, childSocket, server, serverAddrLen, bufferSize);
+        onDataResend(lowestSequenceNumber, socketNum, server, serverAddrLen, bufferSize);
     }
 
     handlePollReturn(
-        childSocket, 
+        socketNum, 
         server,
         serverAddrLen,
         windowSize,
@@ -195,7 +193,7 @@ int onDataPoll(
 
 // Process while the window is open
 int onDataOpen(
-    int childSocket, 
+    int socketNum, 
     struct sockaddr_in6 * server,
     int serverAddrLen,
     int windowSize,
@@ -206,7 +204,7 @@ int onDataOpen(
     int action = STAY_IN_DATA_STATE;
     uint8_t readBuffer[bufferSize];
 
-    while (isWindowOpen() != 0) {
+    while (isWindowOpen() != 0 && action == STAY_IN_DATA_STATE) {
         ssize_t readBytes = read(fileDescriptor, readBuffer, bufferSize);
         if (readBytes < 0) {
             perror("Error: read returned a negative value\n");
@@ -217,11 +215,11 @@ int onDataOpen(
                 int pduLen = createPDU(pduBuffer, 0, DATA_FLAG, readBuffer, 0);
 
                 // Send the data packet to the server that signfies EOF (no data), then move to the done state
-                safeSendto(childSocket, pduBuffer, pduLen, 0, (struct sockaddr *) server, serverAddrLen);
+                safeSendto(socketNum, pduBuffer, pduLen, 0, (struct sockaddr *) server, serverAddrLen);
                 action = MOVE_TO_DONE_STATE;
             } else {
                 action = onDataPoll(
-                    childSocket, 
+                    socketNum, 
                     server,
                     serverAddrLen,
                     windowSize,
@@ -240,9 +238,9 @@ int onDataOpen(
 
             addToSlidingWindow(sequenceNumber, pduLen, pduBuffer);
 
-            printf("Added to sliding window\n");
+            printf("Added to sliding window, childsocket is: %d\n", socketNum);
 
-            safeSendto(childSocket, pduBuffer, pduLen, 0, (struct sockaddr *) server, serverAddrLen);
+            safeSendto(socketNum, pduBuffer, pduLen, 0, (struct sockaddr *) server, serverAddrLen);
 
             printf("Safe sent\n");
 
@@ -250,7 +248,7 @@ int onDataOpen(
             // handle any RR/SREJ packets
             while ((pollRecv = pollCall(0)) != -1) {
                 handlePollReturn(
-                    childSocket, 
+                    socketNum, 
                     server,
                     serverAddrLen,
                     windowSize,
@@ -265,7 +263,7 @@ int onDataOpen(
 }
 
 int onDataClosed(
-    int childSocket, 
+    int socketNum, 
     struct sockaddr_in6 * server,
     int serverAddrLen,
     int windowSize,
@@ -274,9 +272,9 @@ int onDataClosed(
 ) {
     int action = STAY_IN_DATA_STATE;
 
-    while (isWindowOpen() == 0) {
+    while (isWindowOpen() == 0 && action == STAY_IN_DATA_STATE) {
         action = onDataPoll(
-            childSocket, 
+            socketNum, 
             server,
             serverAddrLen,
             windowSize,
@@ -289,7 +287,7 @@ int onDataClosed(
 }
 
 RCOPY_STATE onData(
-    int childSocket, 
+    int socketNum, 
     struct sockaddr_in6 * server,
     int serverAddrLen,
     int windowSize,
@@ -298,7 +296,7 @@ RCOPY_STATE onData(
     int MAXBUF
 ) {
     int onDataOpenStatus = onDataOpen(
-        childSocket,
+        socketNum,
         server,
         serverAddrLen,
         windowSize,
@@ -307,7 +305,7 @@ RCOPY_STATE onData(
         MAXBUF
     );
     int onDataClosedStatus = onDataClosed(
-        childSocket,
+        socketNum,
         server,
         serverAddrLen,
         windowSize,

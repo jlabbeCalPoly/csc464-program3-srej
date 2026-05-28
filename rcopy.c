@@ -80,7 +80,6 @@ void processRcopy(
 	int fileDescriptor
 ) {
 	RCOPY_STATE state = RCOPY_START_STATE;
-	int childSocket = 0;
 
 	while (state != RCOPY_DONE_STATE) {
 		switch (state) {
@@ -88,8 +87,7 @@ void processRcopy(
 				state = onStart(socketNum, windowSize, bufferSize);
 			case RCOPY_FILENAME_STATE:
 				state = onFilename(
-					socketNum, 
-					childSocket, 
+					socketNum,
 					server, 
 					serverAddrLen, 
 					toFilename, 
@@ -100,7 +98,7 @@ void processRcopy(
 				break;
 			case RCOPY_DATA_STATE:
 				state = onData(
-					childSocket,
+					socketNum,
 					server,
 					serverAddrLen,
 					windowSize,

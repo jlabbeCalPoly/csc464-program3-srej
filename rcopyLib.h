@@ -5,7 +5,6 @@ RCOPY_STATE onStart(int socketNum, int windowSize, int bufferSize);
 
 RCOPY_STATE onFilename(
     int socketNum, 
-    int newSocket,
 	struct sockaddr_in6 * server,
     int serverAddrLen,
 	char *toFilename,
@@ -15,7 +14,7 @@ RCOPY_STATE onFilename(
 );
 
 RCOPY_STATE onData(
-    int childSocket, 
+    int socketNum, 
     struct sockaddr_in6 * server,
     int serverAddrLen,
     int windowSize,

@@ -97,6 +97,8 @@ void processClient(
 	float errorRate
 ) {
 	SERVER_STATE state = SERVER_START_STATE;
+	int fileDescriptor;
+
 	while (state != SERVER_DONE_STATE) {
 		switch (state) {
 			case SERVER_START_STATE:
@@ -105,10 +107,11 @@ void processClient(
 				state = SERVER_FILENAME_STATE;
 				break;
 			case SERVER_FILENAME_STATE:
-				state = onFilename(socketNum, client, clientAddrLen, payload + 8, payloadLen - 8);
+				fileDescriptor = getFileDescriptor(payload + 8, payloadLen - 8);
+				state = onFilename(socketNum, client, clientAddrLen, payload + 8, payloadLen - 8, fileDescriptor);
 				break;
 			case SERVER_DATA_STATE:
-				state = SERVER_DONE_STATE;
+				state = onData(socketNum, client, clientAddrLen, MAXBUF. fileDescriptor);
 				break;
 			case SERVER_DONE_STATE:
 				break;
