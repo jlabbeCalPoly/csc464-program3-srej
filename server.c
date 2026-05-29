@@ -47,7 +47,7 @@ int main ( int argc, char *argv[]  )
 	// debug
 	// printf("Error rate: %f\n", errorRate);
 
-	sendErr_init(errorRate, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
+	sendErr_init(errorRate, DROP_ON, FLIP_ON, DEBUG_OFF, RSEED_OFF);
 		
 	socketNum = udpServerSetup(portNumber);
 
@@ -78,7 +78,7 @@ void processServer(int socketNum, float errorRate) {
 				exit(-1);
 			} 
 			if (pid == 0) {
-				printf("Child fork() - child pdi: %d\n", getpid());
+				// printf("Child fork() - child pdi: %d\n", getpid());
 				// Move the pointer on the buffer to point to the payload rather than the header
 				processClient(socketNum, client, clientAddrLen, recvBuffer + 7, recvLen - 7, errorRate);
 				exit(0);
@@ -97,21 +97,22 @@ void processClient(
 	float errorRate
 ) {
 	SERVER_STATE state = SERVER_START_STATE;
-	int fileDescriptor;
+	int windowSize = getWindowSize(payload);
+	int bufferSize = getBufferSize(payload);
+	int fileDescriptor = getFileDescriptor(payload + 8, payloadLen - 8);
 
 	while (state != SERVER_DONE_STATE) {
 		switch (state) {
 			case SERVER_START_STATE:
 				// Update the socket number with the new local socket
-				socketNum = onStart(client, errorRate, payload);
+				socketNum = onStart(client, errorRate, windowSize, bufferSize);
 				state = SERVER_FILENAME_STATE;
 				break;
 			case SERVER_FILENAME_STATE:
-				fileDescriptor = getFileDescriptor(payload + 8, payloadLen - 8);
 				state = onFilename(socketNum, client, clientAddrLen, payload + 8, payloadLen - 8, fileDescriptor);
 				break;
 			case SERVER_DATA_STATE:
-				state = onData(socketNum, client, clientAddrLen, MAXBUF. fileDescriptor);
+				state = onData(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
 				break;
 			case SERVER_DONE_STATE:
 				break;

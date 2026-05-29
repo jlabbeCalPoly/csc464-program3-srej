@@ -15,9 +15,54 @@
 #define MOVE_TO_DONE_STATE -1
 #define STAY_IN_DATA_STATE 0
 
+void onDataBuffer(
+    int socketNum,
+    struct sockaddr_in6 client,
+    int clientAddrLen,
+    int bufferSize,
+    int fileDescriptor,
+    int MAXBUF
+);
+void onDataInOrder(
+    int socketNum,
+    struct sockaddr_in6 client,
+    int clientAddrLen,
+    int bufferSize,
+    int fileDescriptor,
+    int MAXBUF
+);
+
+// Extract the window size from the filename pdu
+int getWindowSize(uint8_t *payload) {
+    uint32_t windowSizeNet = 0;
+    memcpy(&windowSizeNet, payload, 4);
+    u_int32_t windowSizeHost = ntohl(windowSizeNet);
+
+    return windowSizeHost;
+}
+
+// Extract the window size from the filename pdu
+int getBufferSize(uint8_t *payload) {
+    uint32_t bufferSizeNet = 0;
+    memcpy(&bufferSizeNet, payload + 4, 4);
+    u_int32_t bufferSizeHost = ntohl(bufferSizeNet);
+
+    return bufferSizeHost;
+}
+
+// Return the file descriptor for writing to the output file (if possible)
+int getFileDescriptor(uint8_t *payload, uint8_t payloadLen) {
+    char filename[payloadLen + 1];
+    memcpy(filename, payload, payloadLen);
+    filename[payloadLen] = '\0';
+
+    int fileDesriptor = open(filename, O_WRONLY | O_CREAT);
+    return fileDesriptor;
+}
+
 // Handles setting up the child server process appropriately, returns the new socket
-int onStart(struct sockaddr_in6 client, float errorRate, uint8_t *payload) {
-    sendErr_init(errorRate, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
+int onStart(struct sockaddr_in6 client, float errorRate, uint8_t windowSize, uint8_t bufferSize) {
+    sendErr_init(errorRate, DROP_ON, FLIP_ON, DEBUG_OFF, RSEED_OFF);
     int socket = createUdpSocket();
 
     // Initialize the poll set for the child server (listens on this socket)
@@ -25,28 +70,9 @@ int onStart(struct sockaddr_in6 client, float errorRate, uint8_t *payload) {
 	addToPollSet(socket);
 
     // Initalize the sliding window/circular buffer for the child server (based on the provided window and buffer sizes)
-    uint32_t windowSizeNet = 0;
-    memcpy(&windowSizeNet, payload, 4);
-    u_int32_t windowSizeHost = ntohl(windowSizeNet);
-
-    uint32_t bufferSizeNet = 0;
-    memcpy(&bufferSizeNet, payload + 4, 4);
-    u_int32_t bufferSizeHost = ntohl(bufferSizeNet);
-    
-    setupSlidingWindow(windowSizeHost, bufferSizeHost);
+    setupSlidingWindow(windowSize, bufferSize);
 
     return socket;
-}
-
-int getFileDescriptor(uint8_t *payload, uint8_t payloadLen) {
-    char filename[payloadLen + 1];
-    memcpy(filename, payload, payloadLen);
-    filename[payloadLen] = '\0';
-
-    printf("Payload is: %s", filename);
-
-    int fileDesriptor = open(filename, O_WRONLY | O_CREAT);
-    return fileDesriptor;
 }
 
 // Validate that the file can be created and written to on the server
@@ -87,7 +113,7 @@ int onDataPoll() {
     while (pollCall(1000) == -1) {
         // Timeout and counter > 9, meaning other side most likely terminated
         if (counter > 9) {
-            printf("Moving to done state...\n");
+            printf("Terminating early\n");
             return MOVE_TO_DONE_STATE;
         }
         // Increment the timer and resend the lowest packet
@@ -105,13 +131,15 @@ void sendPacket(
     u_int32_t sequenceNumber
 ) {
     uint32_t sequenceNumberNet = htonl(sequenceNumber);
+    uint8_t sequenceNumberBuffer[4];
+    memcpy(sequenceNumberBuffer, &sequenceNumberNet, 4);
 
     uint8_t pduBuffer[11];
-    int pduLen = createPDU(pduBuffer, 0, flag, &sequenceNumberNet, 1);
+    int pduLen = createPDU(pduBuffer, 0, flag, sequenceNumberBuffer, 4);
     safeSendto(socketNum, pduBuffer, pduLen, 0, (struct sockaddr *) &client, clientAddrLen);
 }
 
-void bufferPacket(uint8_t sequenceNumberHost, int recvLen, uint8_t recvBuffer[]) {
+void bufferPacket(uint32_t sequenceNumberHost, int recvLen, uint8_t recvBuffer[]) {
     addToSlidingWindow(sequenceNumberHost, recvLen, recvBuffer);
     setValidSlidingWindow(sequenceNumberHost, 1);
     setHighest(sequenceNumberHost);
@@ -121,15 +149,16 @@ void onDataFlush(
     int socketNum,
     struct sockaddr_in6 client,
     int clientAddrLen,
-    int MAXBUF,
     int bufferSize,
-    int fileDescriptor
+    int fileDescriptor,
+    int MAXBUF
 ) {
     uint8_t dataBuffer[bufferSize + 7];
     int expected = getExpected();
-    while (getValidSlidingWindow(expected)) {
+    while (getValidSlidingWindow(expected) && getSequenceNumberSlidingWindow(expected) == expected) {
         int size = getSlidingWindowEntry(expected, dataBuffer);
-        write(fileDescriptor, dataBuffer, size);
+        write(fileDescriptor, dataBuffer + 7, size - 7);
+
         setValidSlidingWindow(expected, 0);
 
         expected++;
@@ -139,22 +168,9 @@ void onDataFlush(
     sendPacket(socketNum, client, clientAddrLen, RR_FLAG, expected);
     if (expected < getHighest()) {
         sendPacket(socketNum, client, clientAddrLen, SREJ_FLAG, expected);
-
-        onDataBuffer(
-            socketNum,
-            client,
-            clientAddrLen,
-            MAXBUF,
-            fileDescriptor
-        );
+        onDataBuffer(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
     } else {
-        onDataInOrder(
-            socketNum,
-            client,
-            clientAddrLen,
-            MAXBUF,
-            fileDescriptor
-        );
+        onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
     }
 }
 
@@ -162,8 +178,9 @@ void onDataBuffer(
     int socketNum,
     struct sockaddr_in6 client,
     int clientAddrLen,
-    int MAXBUF,
-    int fileDescriptor
+    int bufferSize,
+    int fileDescriptor,
+    int MAXBUF
 ) {
     // If the max amount of timeouts occur, move to the done state
     if (onDataPoll() == MOVE_TO_DONE_STATE) {
@@ -181,44 +198,26 @@ void onDataBuffer(
     // Check for data corruption
     if (calculateChecksum(recvBuffer, recvLen) == 0) {
         uint32_t sequenceNumberNet;
-        memcpy(&sequenceNumberNet, recvBuffer + 7, 4);
+        memcpy(&sequenceNumberNet, recvBuffer, 4);
         uint32_t sequenceNumberHost = ntohl(sequenceNumberNet);
 
         int expected = getExpected();
         if (sequenceNumberHost == expected) {
             write(fileDescriptor, recvBuffer + 7, recvLen - 7);
+
             expected++;
             setExpected(expected);
 
-            onDataFlush(
-                socketNum,
-                client,
-                clientAddrLen,
-                MAXBUF,
-                bufferSize,
-                fileDescriptor
-            );
+            onDataFlush(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
         } else {
             if (sequenceNumberHost > expected) {
                 bufferPacket(sequenceNumberHost, recvLen, recvBuffer);
             }
 
-            onDataBuffer(
-                socketNum,
-                client,
-                clientAddrLen,
-                MAXBUF,
-                fileDescriptor
-            );
+            onDataBuffer(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
         }
     } else {
-        onDataBuffer(
-            socketNum,
-            client,
-            clientAddrLen,
-            MAXBUF,
-            fileDescriptor
-        );
+        onDataBuffer(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
     }
 }
 
@@ -227,8 +226,9 @@ void onDataInOrder(
     int socketNum,
     struct sockaddr_in6 client,
     int clientAddrLen,
-    int MAXBUF,
-    int fileDescriptor
+    int bufferSize,
+    int fileDescriptor,
+    int MAXBUF
 ) {
     // If the max amount of timeouts occur, move to the done state
     if (onDataPoll() == MOVE_TO_DONE_STATE) {
@@ -248,18 +248,13 @@ void onDataInOrder(
         uint8_t flag = getFlag(recvBuffer + 6);
         // filename packet was lost, need to resend
         if (flag == SETUP_FLAG) {
+            uint8_t filenameFlag = getFlagFromFileDescriptor(fileDescriptor);
             uint8_t pduBuffer[8];
-            int pduLen = createPDU(pduBuffer, 0, FILENAME_RESPONSE_FLAG, &FILENAME_OK_FLAG, 1);
+            int pduLen = createPDU(pduBuffer, 0, FILENAME_RESPONSE_FLAG, &filenameFlag, 1);
             safeSendto(socketNum, pduBuffer, pduLen, 0, (struct sockaddr *) &client, clientAddrLen);
 
             // continue as if nothing was received
-            onDataInOrder(
-                socketNum,
-                client,
-                clientAddrLen,
-                MAXBUF,
-                fileDescriptor
-            );
+            onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
         } else {
             // data packet flag, determine if it contains data or represents the EOF (no data other than the header)
             if (recvLen == 7) {
@@ -267,88 +262,46 @@ void onDataInOrder(
             }
 
             uint32_t sequenceNumberNet;
-            memcpy(&sequenceNumberNet, recvBuffer + 7, 4);
+            memcpy(&sequenceNumberNet, recvBuffer, 4);
             uint32_t sequenceNumberHost = ntohl(sequenceNumberNet);
 
             int expected = getExpected();
-            if (sequenceNumberHost == expected) {
-                write(fileDescriptor, recvBuffer + 7, recvLen - 7);
-                setHighest(expected);
-
-                expected++;
-                setExpected(expected);
-                sendPacket(socketNum, client, clientAddrLen, RR_FLAG, expected);
-
-                onDataInOrder(
-                    socketNum,
-                    client,
-                    clientAddrLen,
-                    MAXBUF,
-                    fileDescriptor
-                );
-            } else if (sequenceNumberHost < expected) {
-                // retransmit the highest rr
-                sendPacket(socketNum, client, clientAddrLen, RR_FLAG, expected);
-
-                onDataInOrder(
-                    socketNum,
-                    client,
-                    clientAddrLen,
-                    MAXBUF,
-                    fileDescriptor
-                );
-            } else {
+            if (sequenceNumberHost > expected) {
                 // unexpected packet (greater than expected), SREJ and buffer it
                 sendPacket(socketNum, client, clientAddrLen, SREJ_FLAG, expected);
                 bufferPacket(sequenceNumberHost, recvLen, recvBuffer);
 
-                onDataBuffer(
-                    socketNum,
-                    client,
-                    clientAddrLen,
-                    MAXBUF,
-                    fileDescriptor
-                );
+                onDataBuffer(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+            } else {
+                if (sequenceNumberHost == expected) {
+                    write(fileDescriptor, recvBuffer + 7, recvLen - 7);
+                    setHighest(expected);
+
+                    expected++;
+                    setExpected(expected);
+                    sendPacket(socketNum, client, clientAddrLen, RR_FLAG, expected);
+                } else {
+                    // retransmit the highest rr
+                    sendPacket(socketNum, client, clientAddrLen, RR_FLAG, expected);
+                }
+                onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
             }
         }
-
-        // printPDU(recvBuffer, recvLen);
     } else {
         // Throw away packet, continue as if nothing was received
-        onDataInOrder(
-            socketNum,
-            client,
-            clientAddrLen,
-            MAXBUF,
-            fileDescriptor
-        );
+        onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
     }
-
 }
- 
+
 SERVER_STATE onData(
     int socketNum,
     struct sockaddr_in6 client,
     int clientAddrLen,
-    int MAXBUF,
-    int fileDescriptor
+    int bufferSize,
+    int fileDescriptor,
+    int MAXBUF
 ) {
-    int pollRecv = 0;
-    uint8_t recvBuffer[MAXBUF + 7];
-
-    while ((pollRecv = pollCall(1000)) != -1) {
-        int recvLen = safeRecvfrom(socketNum, recvBuffer, MAXBUF + 7, 0, (struct sockaddr *) &client, &clientAddrLen);
-
-        if (recvLen == 0) {
-            perror("Error: recvLen is 0");
-            exit(-1);
-        }
-
-        // Check for data corruption
-        if (calculateChecksum(recvBuffer, recvLen) == 0) {
-            printPDU(recvBuffer, recvLen);
-        }
-    }
+    onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
 
     return SERVER_DONE_STATE;
 }

@@ -8,6 +8,7 @@
 int cachedWindowSize = 0;
 struct bufferEntry {
     int valid; // Used by the server
+    int sequenceNumber;
     int size;
     uint8_t buffer[];
 };
@@ -26,6 +27,7 @@ void setupCircularBuffer(int windowSize, int bufferSize) {
     for (int i = 0; i < windowSize; i++) {
         buffer[i] = malloc(sizeof(struct bufferEntry) + bufferSize + 7);
         buffer[i]->size = 0;
+        buffer[i]->sequenceNumber = -1;
         buffer[i]->valid = 0;
     }
 }
@@ -39,17 +41,9 @@ int getIndex(uint32_t sequenceNumber) {
 void addToCircularBuffer(uint32_t sequenceNumber, int size, uint8_t *dataBuffer) {
     uint32_t index = getIndex(sequenceNumber);
 
-    printf("Index inside circular buffer: %d\n", index);
-
+    buffer[index]->sequenceNumber = sequenceNumber;
     buffer[index]->size = size;
     memcpy(buffer[index]->buffer, dataBuffer, size);
-
-    // debug
-    uint8_t printBuffer[size + 1];
-    memcpy(printBuffer, buffer[index]->buffer, size);
-    printBuffer[size] = '\0';
-
-    printf("Size: %d  Buffer contents: %s\n", size, printBuffer);
 }
 
 int getEntry(uint32_t sequenceNumber, uint8_t *dataBuffer) {
@@ -57,6 +51,12 @@ int getEntry(uint32_t sequenceNumber, uint8_t *dataBuffer) {
 
     memcpy(dataBuffer, buffer[index]->buffer, buffer[index]->size);
     return buffer[index]->size;
+}
+
+// Retrieve the sequence number at the corresponding index inside the circular buffer
+int getSequenceNumber(uint32_t sequenceNumber) {
+    uint32_t index = getIndex(sequenceNumber);
+    return buffer[index]->sequenceNumber;
 }
 
 int getValid(uint32_t sequenceNumber) {

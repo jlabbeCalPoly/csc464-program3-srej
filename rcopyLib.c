@@ -89,6 +89,9 @@ RCOPY_STATE onFilename(
         safeSendto(socketNum, pduBuffer, pduLen, 0, (struct sockaddr *) server, serverAddrLen);
         // Data to process from the server if pollCall doesn't return -1
         if ((pollRecv = pollCall(1000)) != -1) {
+            // Reset the counter since there was a response from the server
+            counter = 0;
+
             int recvLen = safeRecvfrom(socketNum, recvBuffer, MAXBUF + 7, 0, (struct sockaddr *) server, &serverAddrLen);   
             // debug
 		    // printPDU(recvBuffer, recvLen); 
@@ -96,13 +99,10 @@ RCOPY_STATE onFilename(
             // Check for data corruption
             if (calculateChecksum(recvBuffer, recvLen) == 0) {
                 return onFilenameGetNextState(recvLen, recvBuffer, toFilename);
-            } else {
-                printf("Data corrupted...\n");
             }
         }
         // Timeout occurred or the received pdu was corrupted, increment the counter and resend the pdu
         counter++;
-        printf("Incrementing counter: %d\n", counter);
     };
 
     return RCOPY_DONE_STATE;
@@ -147,14 +147,17 @@ void handlePollReturn(
     uint32_t sequenceNumberHost = ntohl(sequenceNumberNet);
 
     if (flag == RR_FLAG) {
+        // printf("Processing RR for seq #: %d\n", sequenceNumberHost);
+
         onDataRR(sequenceNumberHost, windowSize);
     } else {
+        // printf("Processing SREJ for seq #: %d\n", sequenceNumberHost);
         // SREJ, resend the specific packet
         onDataResend(sequenceNumberHost, socketNum, server, serverAddrLen, bufferSize);
     }
 }
 
-// Poll for one second and resend the lowest data packet if needed. Returns the 
+// Poll for one second and resend the lowest data packet if needed. Returns the state to move into
 int onDataPoll(
     int socketNum, 
     struct sockaddr_in6 * server,
@@ -169,12 +172,11 @@ int onDataPoll(
     while ((pollRecv = pollCall(1000)) == -1) {
         // Timeout and counter > 9, meaning other side most likely terminated
         if (counter > 9) {
-            printf("Moving to done state...\n");
+            printf("Terminating early\n");
             return MOVE_TO_DONE_STATE;
         }
         // Increment the timer and resend the lowest packet
         counter++;
-        printf("Incrementing counter: %d\n", counter);
         int lowestSequenceNumber = getRR();
         onDataResend(lowestSequenceNumber, socketNum, server, serverAddrLen, bufferSize);
     }
@@ -212,7 +214,9 @@ int onDataOpen(
         } else if (readBytes == 0) {
             if (isServerDoneReceiving()) {
                 uint8_t pduBuffer[7];
-                int pduLen = createPDU(pduBuffer, 0, DATA_FLAG, readBuffer, 0);
+                uint32_t sequenceNumber = incrementCurrent();
+                // Create a pdu of size 0, which tells the server that there are no more data packets to be sent
+                int pduLen = createPDU(pduBuffer, sequenceNumber, DATA_FLAG, readBuffer, 0);
 
                 // Send the data packet to the server that signfies EOF (no data), then move to the done state
                 safeSendto(socketNum, pduBuffer, pduLen, 0, (struct sockaddr *) server, serverAddrLen);
@@ -230,19 +234,10 @@ int onDataOpen(
         } else {
             uint8_t pduBuffer[readBytes + 7];
             uint32_t sequenceNumber = incrementCurrent();
-            printf("Packet sent with seq number: %d\n", sequenceNumber);
 
             int pduLen = createPDU(pduBuffer, sequenceNumber, DATA_FLAG, readBuffer, readBytes);
-
-            printf("Created pdu\n");
-
             addToSlidingWindow(sequenceNumber, pduLen, pduBuffer);
-
-            printf("Added to sliding window, childsocket is: %d\n", socketNum);
-
             safeSendto(socketNum, pduBuffer, pduLen, 0, (struct sockaddr *) server, serverAddrLen);
-
-            printf("Safe sent\n");
 
             int pollRecv = 0;
             // handle any RR/SREJ packets
@@ -258,7 +253,6 @@ int onDataOpen(
             }
         }
     }
-
     return action;
 }
 
@@ -282,7 +276,6 @@ int onDataClosed(
             MAXBUF
         );
     }
-
     return action;
 }
 

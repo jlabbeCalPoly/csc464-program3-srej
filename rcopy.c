@@ -26,11 +26,6 @@
 
 #define MAXBUF 1400
 
-// typedef enum State STATE;
-// enum State {
-// 	START, DONE, FILENAME, SEND_DATA, WAIT_ON_ACK, TIMEOUT_ON_ACK
-// };
-void talkToServer(int socketNum, struct sockaddr_in6 * server);
 void processRcopy(int socketNum, 
 	struct sockaddr_in6 * server, 
 	int serverAddrLen, 
@@ -40,7 +35,6 @@ void processRcopy(int socketNum,
 	int bufferSize, 
 	int fileDescriptor
 );
-int readFromStdin(uint8_t * buffer);
 void validateArgs(int argc, char * argv[]);
 int validateFilenames(char *fromFilename, char *toFilename);
 
@@ -62,7 +56,6 @@ int main(int argc, char *argv[]) {
 	sendErr_init(errorRate, DROP_ON, FLIP_ON, DEBUG_OFF, RSEED_OFF);
 	socketNum = setupUdpClientToServer(&server, hostName, hostNumber);
 	processRcopy(socketNum, &server, serverAddrLen, fromFilename, toFilename, windowSize, bufferSize, fileDescriptor);
-	// talkToServer(socketNum, &server);
 
 	close(socketNum);
 
@@ -113,63 +106,6 @@ void processRcopy(
 	}
 }
 
-void talkToServer(int socketNum, struct sockaddr_in6 * server) {
-	int serverAddrLen = sizeof(struct sockaddr_in6);
-	// char * ipString = NULL;
-	
-	// A few counters/defaults for this lab
-	uint32_t sequenceNumberCounter = 0;
-	uint8_t defaultFlag = 1;
-	int dataLen = 0; 
-	uint8_t buffer[MAXBUF];
-	uint8_t recvBuffer[MAXBUF + 7];
-	
-	buffer[0] = '\0';
-	while (buffer[0] != '.')
-	{
-		dataLen = readFromStdin(buffer);
-		// printf("Sending: %s with len: %d\n", buffer,dataLen);
-		
-		// Include space for the header to be added on
-		uint8_t pduBuffer[7 + dataLen];
-		dataLen = createPDU(pduBuffer, sequenceNumberCounter, defaultFlag, buffer, dataLen);
-		sequenceNumberCounter += 1;
-	
-		safeSendto(socketNum, pduBuffer, dataLen, 0, (struct sockaddr *) server, serverAddrLen);
-		
-		dataLen = safeRecvfrom(socketNum, recvBuffer, MAXBUF + 7, 0, (struct sockaddr *) server, &serverAddrLen);
-		printPDU(recvBuffer, dataLen);
-		
-		// print out bytes received
-		// ipString = ipAddressToString(server);
-		// printf("Server with ip: %s and port %d said it received %s\n", ipString, ntohs(server->sin6_port), buffer);
-	}
-}
-
-int readFromStdin(uint8_t *buffer) {
-	int aChar = 0;
-	int inputLen = 0;        
-	
-	// Important you don't input more characters than you have space 
-	buffer[0] = '\0';
-	printf("Enter data: ");
-	while (inputLen < (MAXBUF - 1) && aChar != '\n')
-	{
-		aChar = getchar();
-		if (aChar != '\n')
-		{
-			buffer[inputLen] = aChar;
-			inputLen++;
-		}
-	}
-	
-	// Null terminate the string
-	buffer[inputLen] = '\0';
-	inputLen++;
-	
-	return inputLen;
-}
-
 // Make sure that both filenames are valid (under 100 characters) and that you can open the fromFilename
 // Additionally, return the file descriptor to read from the fromFilename on success
 int validateFilenames(char *fromFilename, char *toFilename) {
@@ -194,8 +130,3 @@ void validateArgs(int argc, char * argv[]) {
 		exit(1);
 	}
 }
-
-
-
-
-

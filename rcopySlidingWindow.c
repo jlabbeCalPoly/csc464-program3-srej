@@ -24,9 +24,10 @@ int incrementCurrent() {
 }
 
 // Increment the bounds of the sliding window based on the provided rr
-void incrementBounds(uint32_t rr, int windowSize) {
-    lower = rr;
-    upper = rr + windowSize;
+void incrementBounds(uint32_t rrReceived, int windowSize) {
+    rr = rrReceived;
+    lower = rrReceived;
+    upper = rrReceived + windowSize;
 } 
 
 // Returns 0 if the window is closed (ie. upper and the sequence number for the packet to be sent are the same)

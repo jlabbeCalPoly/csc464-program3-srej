@@ -26,12 +26,19 @@ int getHighest() {
     return highest;
 }
 
+// Sets the highest sequence number received (with debounce check)
 void setHighest(int value) {
-    highest = value;
+    if (value > highest) {
+        highest = value;
+    }
 }
 
 int getValidSlidingWindow(uint32_t sequenceNumber) {
     return getValid(sequenceNumber);
+}
+
+int getSequenceNumberSlidingWindow(uint32_t sequenceNumber) {
+    return getSequenceNumber(sequenceNumber);
 }
 
 // Set the value of the valid field  in the circular buffer(either 0 for not valid, 1 for valid)
