@@ -11,26 +11,16 @@
 #include "networks.h"
 #include "cpe464.h"
 
+typedef enum onDataState {
+    IN_ORDER,
+    BUFFER,
+    FLUSH,
+    DONE
+} ON_DATA_STATE;
+
 // Constants for serverLib
 #define MOVE_TO_DONE_STATE -1
 #define STAY_IN_DATA_STATE 0
-
-void onDataBuffer(
-    int socketNum,
-    struct sockaddr_in6 client,
-    int clientAddrLen,
-    int bufferSize,
-    int fileDescriptor,
-    int MAXBUF
-);
-void onDataInOrder(
-    int socketNum,
-    struct sockaddr_in6 client,
-    int clientAddrLen,
-    int bufferSize,
-    int fileDescriptor,
-    int MAXBUF
-);
 
 // Extract the window size from the filename pdu
 int getWindowSize(uint8_t *payload) {
@@ -113,7 +103,6 @@ int onDataPoll() {
     while (pollCall(1000) == -1) {
         // Timeout and counter > 9, meaning other side most likely terminated
         if (counter > 9) {
-            printf("Terminating early\n");
             return MOVE_TO_DONE_STATE;
         }
         // Increment the timer and resend the lowest packet
@@ -145,7 +134,7 @@ void bufferPacket(uint32_t sequenceNumberHost, int recvLen, uint8_t recvBuffer[]
     setHighest(sequenceNumberHost);
 }
 
-void onDataFlush(
+ON_DATA_STATE onDataFlush(
     int socketNum,
     struct sockaddr_in6 client,
     int clientAddrLen,
@@ -168,13 +157,13 @@ void onDataFlush(
     sendPacket(socketNum, client, clientAddrLen, RR_FLAG, expected);
     if (expected < getHighest()) {
         sendPacket(socketNum, client, clientAddrLen, SREJ_FLAG, expected);
-        onDataBuffer(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+        return BUFFER;
     } else {
-        onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+        return IN_ORDER;
     }
 }
 
-void onDataBuffer(
+ON_DATA_STATE onDataBuffer(
     int socketNum,
     struct sockaddr_in6 client,
     int clientAddrLen,
@@ -184,7 +173,7 @@ void onDataBuffer(
 ) {
     // If the max amount of timeouts occur, move to the done state
     if (onDataPoll() == MOVE_TO_DONE_STATE) {
-        return;
+        return DONE;
     }
 
     uint8_t recvBuffer[MAXBUF + 7];
@@ -208,21 +197,21 @@ void onDataBuffer(
             expected++;
             setExpected(expected);
 
-            onDataFlush(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+            return FLUSH;
         } else {
             if (sequenceNumberHost > expected) {
                 bufferPacket(sequenceNumberHost, recvLen, recvBuffer);
+            } else {
+                // retransmit the highest rr
+                sendPacket(socketNum, client, clientAddrLen, RR_FLAG, expected);
             }
-
-            onDataBuffer(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
         }
-    } else {
-        onDataBuffer(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
     }
+    return BUFFER;
 }
 
 // Handle the state when packets are arriving as expected
-void onDataInOrder(
+ON_DATA_STATE onDataInOrder(
     int socketNum,
     struct sockaddr_in6 client,
     int clientAddrLen,
@@ -232,7 +221,7 @@ void onDataInOrder(
 ) {
     // If the max amount of timeouts occur, move to the done state
     if (onDataPoll() == MOVE_TO_DONE_STATE) {
-        return;
+        return DONE;
     }
 
     uint8_t recvBuffer[MAXBUF + 7];
@@ -254,11 +243,11 @@ void onDataInOrder(
             safeSendto(socketNum, pduBuffer, pduLen, 0, (struct sockaddr *) &client, clientAddrLen);
 
             // continue as if nothing was received
-            onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+            return IN_ORDER;
         } else {
             // data packet flag, determine if it contains data or represents the EOF (no data other than the header)
             if (recvLen == 7) {
-                return;
+                return DONE;
             }
 
             uint32_t sequenceNumberNet;
@@ -271,7 +260,7 @@ void onDataInOrder(
                 sendPacket(socketNum, client, clientAddrLen, SREJ_FLAG, expected);
                 bufferPacket(sequenceNumberHost, recvLen, recvBuffer);
 
-                onDataBuffer(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+                return BUFFER;
             } else {
                 if (sequenceNumberHost == expected) {
                     write(fileDescriptor, recvBuffer + 7, recvLen - 7);
@@ -284,15 +273,13 @@ void onDataInOrder(
                     // retransmit the highest rr
                     sendPacket(socketNum, client, clientAddrLen, RR_FLAG, expected);
                 }
-                onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
             }
         }
-    } else {
-        // Throw away packet, continue as if nothing was received
-        onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
     }
+    return IN_ORDER;
 }
 
+// State machine for the data transfer part on the server
 SERVER_STATE onData(
     int socketNum,
     struct sockaddr_in6 client,
@@ -301,7 +288,23 @@ SERVER_STATE onData(
     int fileDescriptor,
     int MAXBUF
 ) {
-    onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+    ON_DATA_STATE state = IN_ORDER;
+
+    while (state != DONE) {
+        switch (state) {
+            case IN_ORDER:
+                state = onDataInOrder(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+                break;
+            case BUFFER:
+                state = onDataBuffer(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+                break;
+            case FLUSH:
+                state = onDataFlush(socketNum, client, clientAddrLen, bufferSize, fileDescriptor, MAXBUF);
+                break;
+            case DONE:
+                break;
+        }
+    }
 
     return SERVER_DONE_STATE;
 }

@@ -172,7 +172,6 @@ int onDataPoll(
     while ((pollRecv = pollCall(1000)) == -1) {
         // Timeout and counter > 9, meaning other side most likely terminated
         if (counter > 9) {
-            printf("Terminating early\n");
             return MOVE_TO_DONE_STATE;
         }
         // Increment the timer and resend the lowest packet
@@ -206,7 +205,7 @@ int onDataOpen(
     int action = STAY_IN_DATA_STATE;
     uint8_t readBuffer[bufferSize];
 
-    while (isWindowOpen() != 0 && action == STAY_IN_DATA_STATE) {
+    while (isWindowOpen() == 1 && action == STAY_IN_DATA_STATE) {
         ssize_t readBytes = read(fileDescriptor, readBuffer, bufferSize);
         if (readBytes < 0) {
             perror("Error: read returned a negative value\n");

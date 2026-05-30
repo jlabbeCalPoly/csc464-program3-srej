@@ -32,7 +32,7 @@ void incrementBounds(uint32_t rrReceived, int windowSize) {
 
 // Returns 0 if the window is closed (ie. upper and the sequence number for the packet to be sent are the same)
 int isWindowOpen() {
-    return upper - (current + 1);
+    return (current + 1) < upper;
 }
 
 // Determines if the server has all of the data packets
